@@ -1,9 +1,11 @@
-import { redirect } from "next/navigation"
-import { createServerComponentClient } from "@supabase/auth-helpers-nextjs"
-import { cookies } from "next/headers"
-import MarkdownEditor from "@/components/markdown-editor"
+import { redirect } from "next/navigation";
+import { createServerComponentClient } from "@supabase/auth-helpers-nextjs";
+import { cookies } from "next/headers";
+import MarkdownEditor from "@/components/markdown-editor";
 
-export default async function EditorPage({ params }: { params: { id: string } }) {
+type TParams = Promise<{ id: string }>;
+
+export default async function EditorPage({ params }: { params: TParams }) {
   // Await the cookies result
   const cookieStore = await cookies();
   const supabase = createServerComponentClient({ cookies: () => cookieStore });
@@ -17,8 +19,8 @@ export default async function EditorPage({ params }: { params: { id: string } })
     redirect("/login");
   }
 
-  // Await params (if they are provided as a promise, or to satisfy the new rules)
-  const { id } = await Promise.resolve(params);
+  // Await the asynchronous params to get the actual id value
+  const { id } = await params;
   
   // Fetch document
   const { data: document } = await supabase
