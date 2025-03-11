@@ -8,7 +8,8 @@ type TParams = Promise<{ id: string }>;
 export default async function EditorPage({ params }: { params: TParams }) {
   // Await the cookies result
   const cookieStore = await cookies();
-  const supabase = createServerComponentClient({ cookies: () => cookieStore });
+  // Wrap cookieStore in a Promise to match expected type
+  const supabase = createServerComponentClient({ cookies: () => Promise.resolve(cookieStore) });
 
   // Check if user is authenticated
   const {
