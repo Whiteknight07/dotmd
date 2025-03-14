@@ -50,7 +50,7 @@ export function LoginForm() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `https://dotmd-git-main-whiteknight07s-projects.vercel.app/auth/callback`,
         },
       })
 
@@ -71,7 +71,7 @@ export function LoginForm() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "github",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: `https://dotmd-git-main-whiteknight07s-projects.vercel.app/auth/callback`,
         },
       })
 
@@ -170,4 +170,4 @@ export function LoginForm() {
       </div>
     </>
   )
-} 
+}
