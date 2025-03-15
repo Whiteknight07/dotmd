@@ -29,7 +29,7 @@ export default function SignupPage() {
         email,
         password,
         options: {
-          emailRedirectTo: `https://dotmd-git-main-whiteknight07s-projects.vercel.app/auth/callback`,
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
         },
       })
 
@@ -54,7 +54,7 @@ export default function SignupPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `https://dotmd-git-main-whiteknight07s-projects.vercel.app/auth/callback`,
+          redirectTo: `${window.location.origin}/auth/callback`,
         },
       })
 
@@ -75,7 +75,7 @@ export default function SignupPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "github",
         options: {
-          redirectTo: `https://dotmd-git-main-whiteknight07s-projects.vercel.app/auth/callback`,
+          redirectTo: `${window.location.origin}/auth/callback`,
         },
       })
 
