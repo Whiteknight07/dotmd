@@ -25,14 +25,16 @@ export default async function SharedDocumentsPage() {
   const { data: profile } = await supabase.from("profiles").select("*").eq("id", session.user.id).single()
 
   // Fetch documents shared with the user
-  const { data: sharedDocuments } = await supabase
+  const { data: sharedDocuments, error: sharedError } = await supabase
     .from("document_shares")
     .select(`
       *,
-      document:documents(*),
-      owner:profiles(*)
+      documents:documents(id, title, content, user_id, created_at, updated_at),
+      owner:profiles(id, email, full_name, avatar_url)
     `)
     .eq("user_id", session.user.id)
+  
+  console.log("Shared documents query result:", { sharedDocuments, error: sharedError })
 
   return (
     <DashboardShell user={profile}>
@@ -64,6 +66,9 @@ export default async function SharedDocumentsPage() {
             <p className="mt-2 mb-6 text-sm text-muted-foreground max-w-sm">
               When someone shares a document with you, it will appear here
             </p>
+            {sharedError && (
+              <p className="text-sm text-destructive">Error loading shared documents: {sharedError.message}</p>
+            )}
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -72,16 +77,16 @@ export default async function SharedDocumentsPage() {
                 key={item.id}
                 className="group relative rounded-lg border p-5 shadow-sm transition-all hover:shadow-md hover:border-primary/50"
               >
-                <Link href={`/editor/${item.document.id}`} className="block h-full">
+                <Link href={`/editor/${item.documents.id}`} className="block h-full">
                   <div className="flex flex-col h-full">
                     <div className="mb-2 flex items-center gap-2">
-                      <h3 className="text-lg font-semibold line-clamp-1">{item.document.title}</h3>
+                      <h3 className="text-lg font-semibold line-clamp-1">{item.documents.title}</h3>
                       <Badge variant="outline" className="ml-auto">
                         Shared
                       </Badge>
                     </div>
                     <p className="text-sm text-muted-foreground mb-4">
-                      Updated {formatDistanceToNow(new Date(item.document.updated_at), { addSuffix: true })}
+                      Updated {formatDistanceToNow(new Date(item.documents.updated_at), { addSuffix: true })}
                     </p>
                     <div className="mt-auto pt-4 border-t flex items-center justify-between">
                       <div className="flex items-center gap-2">
