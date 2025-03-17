@@ -6,8 +6,8 @@ import MarkdownEditor from "@/components/markdown-editor";
 type TParams = Promise<{ id: string }>;
 
 export default async function EditorPage({ params }: { params: TParams }) {
-  const cookieStore = await cookies();
-  const supabase = createServerComponentClient<any>({ cookies: () => cookieStore });
+  const cookieStore = cookies();
+  const supabase = createServerComponentClient<any>({ cookies: () => Promise.resolve(cookieStore) });
 
   // Check if user is authenticated
   const { data: { user }, error } = await supabase.auth.getUser();

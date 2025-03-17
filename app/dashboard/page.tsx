@@ -5,8 +5,8 @@ import DashboardShell from "@/components/dashboard-shell"
 import DocumentList from "@/components/document-list"
 
 export default async function DashboardPage() {
-  const cookieStore = await cookies()
-  const supabase = createServerComponentClient<any>({ cookies: () => cookieStore })
+  const cookieStore = cookies()
+  const supabase = createServerComponentClient<any>({ cookies: () => Promise.resolve(cookieStore) })
 
   // Check if user is authenticated
   const { data: { user }, error } = await supabase.auth.getUser()
