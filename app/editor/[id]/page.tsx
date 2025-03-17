@@ -6,17 +6,13 @@ import MarkdownEditor from "@/components/markdown-editor";
 type TParams = Promise<{ id: string }>;
 
 export default async function EditorPage({ params }: { params: TParams }) {
-  // Await the cookies result
   const cookieStore = await cookies();
-  // Wrap cookieStore in a Promise to match expected type
-  const supabase = createServerComponentClient({ cookies: () => Promise.resolve(cookieStore) });
+  const supabase = createServerComponentClient<any>({ cookies: () => cookieStore });
 
   // Check if user is authenticated
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  const { data: { user }, error } = await supabase.auth.getUser();
 
-  if (!session) {
+  if (error || !user) {
     redirect("/login");
   }
 
@@ -35,13 +31,13 @@ export default async function EditorPage({ params }: { params: TParams }) {
   }
 
   // Check if user has access to this document
-  if (document.user_id !== session.user.id) {
+  if (document.user_id !== user.id) {
     // Check if document is shared with this user
     const { data: sharedDoc } = await supabase
       .from("document_shares")
       .select("*")
       .eq("document_id", id)
-      .eq("user_id", session.user.id)
+      .eq("user_id", user.id)
       .single();
 
     if (!sharedDoc) {

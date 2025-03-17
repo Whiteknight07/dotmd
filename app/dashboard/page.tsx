@@ -5,14 +5,13 @@ import DashboardShell from "@/components/dashboard-shell"
 import DocumentList from "@/components/document-list"
 
 export default async function DashboardPage() {
-  const supabase = createServerComponentClient({ cookies })
+  const cookieStore = await cookies()
+  const supabase = createServerComponentClient<any>({ cookies: () => cookieStore })
 
   // Check if user is authenticated
-  const {
-    data: { session },
-  } = await supabase.auth.getSession()
+  const { data: { user }, error } = await supabase.auth.getUser()
 
-  if (!session) {
+  if (error || !user) {
     redirect("/login")
   }
 
@@ -20,11 +19,11 @@ export default async function DashboardPage() {
   const { data: documents } = await supabase
     .from("documents")
     .select("*")
-    .eq("user_id", session.user.id)
+    .eq("user_id", user.id)
     .order("updated_at", { ascending: false })
 
   // Fetch user profile
-  const { data: profile } = await supabase.from("profiles").select("*").eq("id", session.user.id).single()
+  const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single()
 
   return (
     <DashboardShell user={profile}>
