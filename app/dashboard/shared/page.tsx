@@ -35,13 +35,36 @@ export default async function SharedDocumentsPage() {
         content,
         user_id,
         created_at,
-        updated_at,
-        owner:profiles(id, email, full_name, avatar_url)
+        updated_at
       )
     `)
     .eq("user_id", session.user.id)
   
-  console.log("Shared documents query result:", { sharedDocuments, error: sharedError })
+  // If we have shared documents, fetch the owner information for each document
+  let documentsWithOwners = []
+  if (sharedDocuments && sharedDocuments.length > 0) {
+    documentsWithOwners = await Promise.all(
+      sharedDocuments.map(async (item) => {
+        // Fetch the owner profile for this document
+        const { data: ownerData } = await supabase
+          .from("profiles")
+          .select("id, email, full_name, avatar_url")
+          .eq("id", item.documents.user_id)
+          .single()
+        
+        // Return the document with owner information
+        return {
+          ...item,
+          documents: {
+            ...item.documents,
+            owner: ownerData
+          }
+        }
+      })
+    )
+  }
+  
+  console.log("Shared documents query result:", { documentsWithOwners, error: sharedError })
 
   return (
     <DashboardShell user={profile}>
@@ -51,7 +74,7 @@ export default async function SharedDocumentsPage() {
           <p className="text-muted-foreground">Documents that have been shared with you by other users</p>
         </div>
 
-        {!sharedDocuments || sharedDocuments.length === 0 ? (
+        {!documentsWithOwners || documentsWithOwners.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-lg border border-dashed p-8 text-center">
             <div className="rounded-full bg-primary/10 p-3 text-primary">
               <svg
@@ -79,7 +102,7 @@ export default async function SharedDocumentsPage() {
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {sharedDocuments.map((item) => (
+            {documentsWithOwners.map((item) => (
               <div
                 key={item.id}
                 className="group relative rounded-lg border p-5 shadow-sm transition-all hover:shadow-md hover:border-primary/50"
