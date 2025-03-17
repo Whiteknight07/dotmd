@@ -29,8 +29,15 @@ export default async function SharedDocumentsPage() {
     .from("document_shares")
     .select(`
       *,
-      documents:documents(id, title, content, user_id, created_at, updated_at),
-      owner:profiles(id, email, full_name, avatar_url)
+      documents:documents(
+        id,
+        title,
+        content,
+        user_id,
+        created_at,
+        updated_at,
+        owner:profiles(id, email, full_name, avatar_url)
+      )
     `)
     .eq("user_id", session.user.id)
   
@@ -91,11 +98,11 @@ export default async function SharedDocumentsPage() {
                     <div className="mt-auto pt-4 border-t flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Avatar className="h-7 w-7">
-                          <AvatarImage src={item.owner?.avatar_url || ""} alt={item.owner?.email || "Owner"} />
-                          <AvatarFallback>{item.owner?.email?.charAt(0).toUpperCase() || "O"}</AvatarFallback>
+                          <AvatarImage src={item.documents.owner?.avatar_url || ""} alt={item.documents.owner?.email || "Owner"} />
+                          <AvatarFallback>{item.documents.owner?.email?.charAt(0).toUpperCase() || "O"}</AvatarFallback>
                         </Avatar>
                         <span className="text-xs text-muted-foreground">
-                          Shared by {item.owner?.full_name || item.owner?.email || "Unknown"}
+                          Shared by {item.documents.owner?.full_name || item.documents.owner?.email || "Unknown"}
                         </span>
                       </div>
                       <Button variant="ghost" size="sm" className="gap-1 text-xs text-muted-foreground">
