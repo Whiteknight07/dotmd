@@ -19,6 +19,7 @@
     "@radix-ui/react-toast": "^1.2.6",
     "@radix-ui/react-tooltip": "^1.1.8",
     "@supabase/auth-helpers-nextjs": "^0.10.0",
+    "@supabase/realtime-js": "^2.11.5",
     "@supabase/supabase-js": "^2.49.1",
     "@tailwindcss/typography": "^0.5.16",
     "class-variance-authority": "^0.7.1",
@@ -32,7 +33,9 @@
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.0.2",
     "tailwindcss-animate": "^1.0.7",
-    "use-debounce": "^10.0.4"
+    "use-debounce": "^10.0.4",
+    "y-supabase": "^0.0.4-7-alpha",
+    "yjs": "^13.6.24"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
