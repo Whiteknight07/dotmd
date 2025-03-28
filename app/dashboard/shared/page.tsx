@@ -40,31 +40,41 @@ export default async function SharedDocumentsPage() {
     `)
     .eq("user_id", session.user.id)
   
-  // If we have shared documents, fetch the owner information for each document
+  // If we have shared documents, fetch the owner information efficiently
   let documentsWithOwners = []
+  let ownerFetchError = null
   if (sharedDocuments && sharedDocuments.length > 0) {
-    documentsWithOwners = await Promise.all(
-      sharedDocuments.map(async (item) => {
-        // Fetch the owner profile for this document
-        const { data: ownerData } = await supabase
-          .from("profiles")
-          .select("id, email, full_name, avatar_url")
-          .eq("id", item.documents.user_id)
-          .single()
-        
-        // Return the document with owner information
-        return {
-          ...item,
-          documents: {
-            ...item.documents,
-            owner: ownerData
-          }
-        }
-      })
-    )
+    // 1. Collect unique owner IDs
+    const ownerIds = [...new Set(sharedDocuments.map(item => item.documents.user_id).filter(id => id))]
+
+    // 2. Fetch all owner profiles in one query
+    const ownersMap = new Map() // Use const as it's not reassigned
+    if (ownerIds.length > 0) {
+      const { data: ownersData, error: ownersError } = await supabase
+        .from("profiles")
+        .select("id, email, full_name, avatar_url")
+        .in("id", ownerIds)
+      
+      if (ownersError) {
+        console.error("Error fetching owner profiles:", ownersError)
+        ownerFetchError = ownersError // Store error to potentially display later
+      } else if (ownersData) {
+        ownersData.forEach(owner => ownersMap.set(owner.id, owner))
+      }
+    }
+
+    // 3. Map owners back to the documents
+    documentsWithOwners = sharedDocuments.map(item => ({
+      ...item,
+      documents: {
+        ...item.documents,
+        owner: ownersMap.get(item.documents.user_id) || null // Get owner from map
+      }
+    }))
   }
   
-  console.log("Shared documents query result:", { documentsWithOwners, error: sharedError })
+  // Log results (consider removing in production)
+  console.log("Shared documents query result:", { documentsWithOwners, error: sharedError || ownerFetchError })
 
   return (
     <DashboardShell user={profile}>
