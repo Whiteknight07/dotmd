@@ -1,15 +1,16 @@
+// src/components/markdown-editor.tsx
+
 "use client"
 
-import { useEffect, useState, useRef } from "react"
+import React, { useEffect, useState, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
-import { ArrowLeft, Save, Share, MessageSquare, Loader2 } from "lucide-react"
+import { ArrowLeft, Share, MessageSquare, Loader2, X as CloseIcon } from "lucide-react" // Added CloseIcon
 import { marked } from "marked"
-import { useDebounce } from "use-debounce"
-import type { RealtimeChannel } from "@supabase/supabase-js"
+import type { RealtimeChannel } from "@supabase/realtime-js" // Correct type import
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { toast } from "@/hooks/use-toast"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
@@ -24,30 +25,40 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Comment } from "@/components/comment"
+import { Comment } from "@/components/comment" // Assuming this component exists and works
+import * as Y from 'yjs'
+import { SupabaseProvider } from 'y-supabase'
+import type { Database } from "@/lib/supabase-types" // Import Database type if you have it
 
-interface Document {
+// --- Interfaces ---
+
+// Interface for the document data passed as prop
+interface DocumentProp {
   id: string
   title: string
-  content: string
+  content: string // Still needed for initial render before Yjs loads
   user_id: string
+  // Add other fields from your 'documents' table if needed
 }
 
+// Interface for user profile data
 interface User {
   id: string
   email: string
-  full_name?: string
-  avatar_url?: string
+  full_name?: string | null // Allow null
+  avatar_url?: string | null // Allow null
 }
 
+// Interface for users tracked by Yjs Awareness
 interface ActiveUser extends User {
   color: string
   cursor?: {
-    position: number
-    selection?: { start: number; end: number }
+    anchor: number | null
+    head: number | null
   }
 }
 
+// Interface for comment data
 interface CommentType {
   id: string
   user_id: string
@@ -55,446 +66,526 @@ interface CommentType {
   content: string
   position: number
   created_at: string
-  user?: {
+  user?: { // Nested user profile data for the comment author
     email: string
-    full_name?: string
-    avatar_url?: string
-  }
+    full_name?: string | null
+    avatar_url?: string | null
+  } | null // User might be null if profile was deleted
 }
 
-// Generate a random color for user cursors
-const getRandomColor = () => {
+// --- Helper Functions ---
+
+// Generates a pseudo-random color based on a string (e.g., user ID)
+const getUserColor = (userId: string): string => {
   const colors = [
-    "bg-red-500",
-    "bg-blue-500",
-    "bg-green-500",
-    "bg-yellow-500",
-    "bg-purple-500",
-    "bg-pink-500",
-    "bg-indigo-500",
-    "bg-orange-500",
-  ]
-  return colors[Math.floor(Math.random() * colors.length)]
+    '#30bced', '#6eeb83', '#ffbc42', '#ecd444', '#ee6352',
+    '#9ac2c9', '#8acb88', '#fefe62', '#ffb703', '#fb8500',
+    '#EF767A', '#456990', '#49BEAA', '#A8D0E6', '#F7AEF8'
+  ];
+  let hash = 0;
+  for (let i = 0; i < userId.length; i++) {
+    hash = userId.charCodeAt(i) + ((hash << 5) - hash);
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  const index = Math.abs(hash) % colors.length;
+  return colors[index];
 }
 
-export default function MarkdownEditor({ document }: { document: Document }) {
-  const [content, setContent] = useState(document.content)
-  const [title, setTitle] = useState(document.title)
-  const [debouncedContent] = useDebounce(content, 1000)
-  const [debouncedTitle] = useDebounce(title, 1000)
-  const [saving, setSaving] = useState(false)
-  const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([])
-  const [currentUser, setCurrentUser] = useState<User | null>(null)
-  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false)
-  const [shareEmail, setShareEmail] = useState("")
-  const [isCommentsOpen, setIsCommentsOpen] = useState(false)
-  const [comments, setComments] = useState<CommentType[]>([])
-  const [newComment, setNewComment] = useState("")
-  const [selectedPosition, setSelectedPosition] = useState<number | null>(null)
-  const [isLoading, setIsLoading] = useState(false)
-  const [view, setView] = useState<"split" | "editor" | "preview">("split")
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const router = useRouter()
-  const supabase = createClientComponentClient()
+// --- Component ---
 
-  // Store the last saved content/title to prevent redundant saves
-  const lastSavedContent = useRef(document.content);
+export default function MarkdownEditor({ document }: { document: DocumentProp }) {
+  // --- Yjs State ---
+  const [yDoc, setYDoc] = useState<Y.Doc | null>(null);
+  const [provider, setProvider] = useState<SupabaseProvider | null>(null);
+  const yTextRef = useRef<Y.Text | null>(null);
+  const awarenessRef = useRef<any>(null); // Yjs Awareness instance
+
+  // --- Editor State ---
+  // Initialize with prop, but Yjs will update it after sync
+  const [editorContent, setEditorContent] = useState(document.content);
+  const [title, setTitle] = useState(document.title);
+
+  // --- Title Saving State ---
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
   const lastSavedTitle = useRef(document.title);
+  const titleSaveTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch current user
+  // --- Collaboration & UI State ---
+  const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([]);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [shareEmail, setShareEmail] = useState("");
+  const [isCommentsOpen, setIsCommentsOpen] = useState(false);
+  const [comments, setComments] = useState<CommentType[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [selectedPosition, setSelectedPosition] = useState<number | null>(null); // For comment context
+  const [isLoading, setIsLoading] = useState(false); // General loading for share/comment actions
+  const [view, setView] = useState<"split" | "editor" | "preview">("split");
+
+  // --- Refs & Hooks ---
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const router = useRouter();
+  // Explicitly type the client if you have Database types from Supabase CLI
+  const supabase = createClientComponentClient<Database>();
+
+  // --- Effects ---
+
+  // 1. Fetch Current User Profile
   useEffect(() => {
     const fetchCurrentUser = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (!user) return
-
-      const { data } = await supabase.from("profiles").select("*").eq("id", user.id).single()
-
-      if (data) {
-        setCurrentUser(data)
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) {
+        console.error("Auth error or no user:", authError);
+        router.push('/login'); // Redirect if not authenticated
+        return;
       }
-    }
 
-    fetchCurrentUser()
-  }, [supabase])
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
 
-  // Fetch comments
+      if (profileError && profileError.code !== 'PGRST116') { // Ignore 'Row not found' error initially
+        console.error("Error fetching profile:", profileError);
+        toast({ title: "Profile Error", description: "Could not load your profile.", variant: "destructive" });
+        // Fallback to basic user info if profile fetch fails critically
+        setCurrentUser({ id: user.id, email: user.email || 'No Email' });
+      } else if (profileData) {
+        setCurrentUser(profileData);
+      } else {
+        // Handle case where profile doesn't exist yet (optional: create profile or redirect)
+        console.warn("User profile not found for ID:", user.id, "Using basic info.");
+        setCurrentUser({ id: user.id, email: user.email || 'No Email' });
+      }
+    };
+    fetchCurrentUser();
+  }, [supabase, router]);
+
+  // 2. Fetch and Subscribe to Comments
   useEffect(() => {
+    if (!document.id) return;
+
     const fetchComments = async () => {
       const { data, error } = await supabase
         .from("comments")
         .select(`
-          *,
-          user:profiles(email, full_name, avatar_url)
+          id, content, created_at, position,
+          user:profiles ( email, full_name, avatar_url )
         `)
         .eq("document_id", document.id)
-        .order("created_at", { ascending: false })
+        .order("created_at", { ascending: true }); // Order for chronological display
 
       if (error) {
-        console.error("Error fetching comments:", error)
-        toast({
-          title: "Error",
-          description: "Failed to load comments.",
-          variant: "destructive",
-        })
-        return
-      }
-
-      // Ensure the structure matches CommentType, especially the nested user object
-      const formattedComments = data.map(comment => ({
-        ...comment,
-        user: comment.user ? {
-          email: (comment.user as any).email,
-          full_name: (comment.user as any).full_name,
-          avatar_url: (comment.user as any).avatar_url,
-        } : null // Handle case where user might be null
-      })) as CommentType[]
-
-
-      setComments(formattedComments || [])
-    }
-
-    fetchComments()
-
-    // Subscribe to new comments
-    const channel = supabase
-      .channel(`comments:${document.id}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "comments",
-          filter: `document_id=eq.${document.id}`,
-        },
-        () => {
-          fetchComments()
-        },
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [document.id, supabase])
-
-  // Set up real-time collaboration
-  useEffect(() => {
-    let channel: RealtimeChannel
-
-    const setupRealtime = async () => {
-      // Get current user
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-      if (!user) return
-
-      // Subscribe to document changes
-      channel = supabase
-        .channel(`document:${document.id}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "documents",
-            filter: `id=eq.${document.id}`,
-          },
-          (payload) => {
-            // Only update if the change was made by another user
-            if (payload.new.user_id !== user.id) {
-              setContent(payload.new.content)
-              setTitle(payload.new.title)
-            }
-          },
-        )
-        .on("broadcast", { event: "cursor-update" }, (payload) => {
-          setActiveUsers((current) =>
-            current.map((u) => (u.id === payload.payload.user.id ? { ...u, cursor: payload.payload.cursor } : u)),
-          )
-        })
-        .on("presence", { event: "sync" }, () => {
-          const state = channel.presenceState()
-          const userMap = new Map<string, ActiveUser>()
-          Object.values(state).forEach((presence: any) => {
-            const userPresence = presence[0] // Assuming the first presence is the relevant one
-            if (userPresence && userPresence.user && userPresence.user.id) {
-              userMap.set(userPresence.user.id, {
-                ...userPresence.user,
-                color: userPresence.color,
-                cursor: userPresence.cursor,
-              })
-            }
-          })
-          setActiveUsers(Array.from(userMap.values())) // Set state with unique users from the map
-        })
-        .on("presence", { event: "join" }, ({ key, newPresences }) => {
-          const newUser = {
-            ...newPresences[0].user,
-            color: newPresences[0].color,
-          }
-          setActiveUsers((prev) => [...prev.filter((u) => u.id !== newUser.id), newUser])
-
-          // Notify about new user
-          toast({
-            title: "User joined",
-            description: `${newUser.email || "A user"} joined the document`,
-          })
-        })
-        .on("presence", { event: "leave" }, ({ key, leftPresences }) => {
-          const userId = leftPresences[0].user.id
-          setActiveUsers((prev) => prev.filter((u) => u.id !== userId))
-        })
-        .subscribe(async (status) => {
-          if (status === "SUBSCRIBED" && user) {
-            // Get user profile
-            const { data: profile } = await supabase.from("profiles").select("*").eq("id", user.id).single()
-
-            // Track presence with user info and random color
-            await channel.track({
-              user: profile,
-              color: getRandomColor(),
-              cursor: null,
-              online_at: new Date().toISOString(),
-            })
-          }
-        })
-    }
-
-    setupRealtime()
-
-    return () => {
-      if (channel) {
-        supabase.removeChannel(channel)
-      }
-    }
-  }, [document.id, supabase])
-
-  // Update cursor position
-  const updateCursorPosition = () => {
-    if (!textareaRef.current) return
-
-    const channel = supabase.channel(`document:${document.id}`)
-    const position = textareaRef.current.selectionStart
-    const selection =
-      textareaRef.current.selectionStart !== textareaRef.current.selectionEnd
-        ? {
-            start: textareaRef.current.selectionStart,
-            end: textareaRef.current.selectionEnd,
-          }
-        : undefined
-
-    channel.send({
-      type: "broadcast",
-      event: "cursor-update",
-      payload: {
-        user: currentUser,
-        cursor: { position, selection },
-      },
-    })
-  }
-
-  // Save document when debounced content/title changes
-  useEffect(() => {
-    const saveDocument = async () => {
-      // Prevent saving if content and title haven't changed from the last saved state
-      if (debouncedContent === lastSavedContent.current && debouncedTitle === lastSavedTitle.current) {
+        console.error("Error fetching comments:", error);
+        toast({ title: "Error", description: "Failed to load comments.", variant: "destructive" });
         return;
       }
-
-      // Prevent saving if currentUser is not yet loaded
-      if (!currentUser) {
-          return;
-      }
-
-      setSaving(true);
-      try {
-        const { error } = await supabase
-          .from("documents")
-          .update({
-            content: debouncedContent,
-            title: debouncedTitle,
-            updated_at: new Date().toISOString(),
-            user_id: currentUser.id, // Ensure user_id is correctly set
-          })
-          .eq("id", document.id);
-
-        if (error) throw error;
-
-        // Update the refs with the successfully saved content/title
-        lastSavedContent.current = debouncedContent;
-        lastSavedTitle.current = debouncedTitle;
-
-      } catch (error) {
-        console.error("Error saving document:", error);
-        toast({
-          title: "Error saving",
-          description: "Failed to save your changes",
-          variant: "destructive",
-        });
-      } finally {
-        setSaving(false);
-      }
+      setComments((data as CommentType[]) || []); // Cast and set comments
     };
 
-    saveDocument();
-    // Depend only on debounced values, document.id, supabase, and currentUser
-  }, [debouncedContent, debouncedTitle, document.id, supabase, currentUser]);
+    fetchComments(); // Initial fetch
 
-  // Handle sharing
+    // Subscribe to changes
+    const commentsChannel = supabase
+      .channel(`comments:${document.id}`)
+      .on<CommentType>( // Use generic type for payload if possible
+        "postgres_changes",
+        { event: "*", schema: "public", table: "comments", filter: `document_id=eq.${document.id}` },
+        (payload) => {
+          console.log('Comment change received:', payload.eventType, payload.new || payload.old);
+          // Simple refetch on any change for now
+          // More advanced: Update state based on payload.eventType (INSERT, UPDATE, DELETE)
+          fetchComments();
+        }
+      )
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          console.log(`Subscribed to comments channel for doc ${document.id}`);
+        }
+        if (err) {
+            console.error(`Error subscribing to comments channel:`, err);
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(commentsChannel).catch(err => console.error("Error removing comments channel:", err));
+    };
+  }, [document.id, supabase]);
+
+  // 3. Initialize Yjs and Provider
+  useEffect(() => {
+    // Ensure all dependencies are ready
+    if (!document || !supabase || !currentUser || !currentUser.id) {
+      console.log("Yjs init waiting for dependencies...", { docExists: !!document, supabaseExists: !!supabase, currentUserExists: !!currentUser });
+      return;
+    }
+
+    console.log(`Initializing Yjs for doc: ${document.id}, user: ${currentUser.id}`);
+
+    const doc = new Y.Doc();
+    setYDoc(doc);
+
+    const yText = doc.getText('markdown');
+    yTextRef.current = yText;
+
+    const channelId = `document-yjs:${document.id}`;
+    console.log("Connecting to Supabase channel:", channelId);
+    const realtimeChannel = supabase.channel(channelId) as RealtimeChannel;
+
+    // --- IMPORTANT: Use 'yjs_content' since schema was changed ---
+    const supabaseProvider = new SupabaseProvider(doc, realtimeChannel, {
+      tableName: 'documents',
+      idName: 'id',
+      columnName: 'yjs_content', // Use the BYTEA column
+      id: document.id,
+      // Optional: Add `resyncInterval` if needed
+      // resyncInterval: 5000,
+    });
+
+    setProvider(supabaseProvider);
+    awarenessRef.current = supabaseProvider.awareness;
+
+    // --- Sync Editor Content ---
+    const handleYTextChange = () => {
+      if (!yTextRef.current) return;
+      const currentYjsText = yTextRef.current.toString();
+      setEditorContent(prev => (prev !== currentYjsText ? currentYjsText : prev));
+    };
+    yText.observe(handleYTextChange);
+
+    // --- Sync Awareness ---
+    const handleAwarenessChange = () => {
+      if (!awarenessRef.current || !currentUser || !currentUser.id) return;
+      const states = Array.from(awarenessRef.current.getStates().values());
+      const users = states
+        .filter(state => state.user && state.user.id !== currentUser!.id) // Filter out self
+        .map(state => ({
+          ...state.user, // Spread user data from awareness state
+          color: state.color || getUserColor(state.user.id), // Use assigned color or generate one
+          cursor: state.cursor, // Structure: { anchor: num, head: num }
+        })) as ActiveUser[];
+      setActiveUsers(users);
+    };
+    awarenessRef.current.on('change', handleAwarenessChange);
+
+    // Set initial local awareness state
+    awarenessRef.current.setLocalStateField('user', {
+      id: currentUser.id,
+      email: currentUser.email,
+      avatar_url: currentUser.avatar_url,
+      full_name: currentUser.full_name,
+    });
+    awarenessRef.current.setLocalStateField('color', getUserColor(currentUser.id));
+
+    // --- Provider Status Handling ---
+    supabaseProvider.on('sync', (isSynced: boolean) => {
+      console.log(`Yjs Provider ${isSynced ? 'synced' : 'out of sync'}`);
+      if (isSynced) handleYTextChange(); // Ensure editor matches state on sync
+    });
+    supabaseProvider.on('error', (error: any) => {
+      console.error('SupabaseProvider error:', error);
+      toast({ title: "Sync Error", description: "Real-time connection issue.", variant: "destructive" });
+    });
+
+    // --- Initial Load ---
+    // Manually trigger sync/load if y-supabase doesn't do it automatically enough
+    // supabaseProvider.connect(); // Or equivalent method if exists to force initial load
+
+    // --- Cleanup ---
+    return () => {
+      console.log("Cleaning up Yjs, Awareness, and Supabase channel:", channelId);
+      awarenessRef.current?.off('change', handleAwarenessChange);
+      awarenessRef.current?.destroy();
+      supabaseProvider?.destroy();
+      doc?.destroy();
+      supabase.removeChannel(realtimeChannel).catch(err => console.error("Error removing channel:", err));
+      yText?.unobserve(handleYTextChange);
+      setProvider(null);
+      setYDoc(null);
+      yTextRef.current = null;
+      awarenessRef.current = null;
+      setActiveUsers([]);
+    };
+  }, [document, supabase, currentUser]); // Re-initialize if these change
+
+   // 4. Cleanup Title Save Timeout on Unmount
+   useEffect(() => {
+     return () => {
+       if (titleSaveTimeout.current) {
+         clearTimeout(titleSaveTimeout.current);
+       }
+     };
+   }, []); // Empty dependency array ensures this runs only on mount and unmount
+
+  // --- Callback Handlers ---
+
+  // Update Yjs Document on Editor Input
+  const handleEditorChange = useCallback((newEditorValue: string) => {
+    setEditorContent(newEditorValue); // Update UI immediately
+
+    if (yTextRef.current && yDoc && provider?.synced) {
+      const yText = yTextRef.current;
+      yDoc.transact(() => {
+        // Simple diff: delete all and insert new. Yjs handles efficiently.
+        if (newEditorValue !== yText.toString()) {
+          yText.delete(0, yText.length);
+          yText.insert(0, newEditorValue);
+        }
+      }, 'local'); // Origin 'local'
+    }
+  }, [yDoc, provider]); // Dependencies: Yjs doc and provider sync status
+
+  // Update Yjs Awareness on Cursor/Selection Change
+  const updateAwarenessCursor = useCallback(() => {
+    if (!textareaRef.current || !awarenessRef.current || !provider?.synced) return;
+
+    const { selectionStart, selectionEnd } = textareaRef.current;
+    const anchor = selectionStart;
+    const head = selectionEnd;
+
+    awarenessRef.current.setLocalStateField('cursor', { anchor, head });
+  }, [provider]); // Dependency: provider sync status
+
+  // Handle Title Input and Debounced Saving
+  const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTitle = e.target.value;
+    setTitle(newTitle);
+
+    if (titleSaveTimeout.current) clearTimeout(titleSaveTimeout.current);
+
+    titleSaveTimeout.current = setTimeout(async () => {
+      if (newTitle !== lastSavedTitle.current && currentUser) {
+        setIsSavingTitle(true);
+        try {
+          const { error } = await supabase
+            .from('documents')
+            .update({ title: newTitle, updated_at: new Date().toISOString() })
+            .eq('id', document.id);
+          if (error) throw error;
+          lastSavedTitle.current = newTitle;
+        } catch (error: any) {
+          console.error("Error saving title:", error);
+          toast({ title: "Error", description: `Failed to save title: ${error.message}`, variant: "destructive" });
+        } finally {
+          setIsSavingTitle(false);
+        }
+      }
+    }, 1500); // 1.5 second debounce
+  };
+
+  // Handle Document Sharing
   const handleShare = async () => {
-    if (!shareEmail) return
-    setIsLoading(true)
-
+    if (!shareEmail || !currentUser) return;
+    setIsLoading(true);
     try {
-      // Get user by email
-      const { data: users, error: userError } = await supabase
-        .from("profiles")
-        .select("id")
-        .eq("email", shareEmail)
-        .single()
+      const { data: targetUser, error: findError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('email', shareEmail.trim()) // Trim email
+        .single();
 
-      if (userError) throw new Error("User not found")
+      if (findError || !targetUser) throw new Error("User not found.");
+      if (targetUser.id === currentUser.id) throw new Error("Cannot share with yourself.");
 
-      // Share document
-      const { error } = await supabase.from("document_shares").insert([
-        {
-          document_id: document.id,
-          user_id: users.id,
-        },
-      ])
+      // Check if already shared
+      const { count, error: checkError } = await supabase
+        .from('document_shares')
+        .select('*', { count: 'exact', head: true }) // Efficiently check existence
+        .eq('document_id', document.id)
+        .eq('user_id', targetUser.id);
 
-      if (error) throw error
+      if (checkError) throw checkError;
+      if (count !== null && count > 0) throw new Error("Already shared with this user.");
 
-      toast({
-        title: "Document shared",
-        description: `Document has been shared with ${shareEmail}`,
-      })
+      // Insert share record
+      const { error: insertError } = await supabase
+        .from('document_shares')
+        .insert({ document_id: document.id, user_id: targetUser.id });
 
-      setShareEmail("")
-      setIsShareDialogOpen(false)
+      if (insertError) throw insertError;
+
+      toast({ title: "Shared Successfully", description: `Document shared with ${shareEmail}.` });
+      setShareEmail("");
+      setIsShareDialogOpen(false);
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to share document",
-        variant: "destructive",
-      })
+      console.error("Sharing error:", error);
+      toast({ title: "Sharing Failed", description: error.message, variant: "destructive" });
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
-  // Add comment
+  // Handle Adding a Comment
   const addComment = async () => {
-    if (!newComment || selectedPosition === null || !currentUser) return
-    setIsLoading(true)
-
+    if (!newComment.trim() || selectedPosition === null || !currentUser) return;
+    setIsLoading(true);
     try {
-      const { error } = await supabase.from("comments").insert([
-        {
-          document_id: document.id,
-          user_id: currentUser.id,
-          content: newComment,
-          position: selectedPosition,
-        },
-      ])
-
-      if (error) throw error
-
-      setNewComment("")
-      setSelectedPosition(null)
-
-      toast({
-        title: "Comment added",
-        description: "Your comment has been added to the document",
-      })
+      const { error } = await supabase.from("comments").insert({
+        document_id: document.id,
+        user_id: currentUser.id,
+        content: newComment.trim(),
+        position: selectedPosition, // The character index where selection started
+      });
+      if (error) throw error;
+      setNewComment("");
+      setSelectedPosition(null); // Close input area for this position
+      toast({ title: "Comment Added" });
+      // List updates via real-time subscription
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to add comment",
-        variant: "destructive",
-      })
+      console.error("Add comment error:", error);
+      toast({ title: "Error", description: `Failed to add comment: ${error.message}`, variant: "destructive" });
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  };
 
-  // Handle text selection for commenting
+  // Handle Text Selection for Commenting
   const handleTextSelection = () => {
-    if (!textareaRef.current) return
+    if (!textareaRef.current || isCommentsOpen) return; // Don't trigger if pane is already open
     if (textareaRef.current.selectionStart !== textareaRef.current.selectionEnd) {
-      setSelectedPosition(textareaRef.current.selectionStart)
+      setSelectedPosition(textareaRef.current.selectionStart);
+      setIsCommentsOpen(true); // Open comments pane on text selection
     }
-  }
+  };
 
-  // Render user cursors
+  // --- Cursor Rendering ---
+  // Helper to get approx coords (Needs refinement for accuracy)
+  const getCoordsFromIndex = (index: number): { x: number; y: number; height: number } | null => {
+    const textarea = textareaRef.current;
+    if (!textarea || typeof editorContent !== 'string' || index < 0 || index > editorContent.length) {
+        return null;
+    }
+
+    // Create a hidden div to measure text layout
+    const measureDiv = document.createElement('div');
+    const uniqueId = `measure-${Date.now()}-${Math.random()}`; // Make ID unique
+    measureDiv.id = uniqueId; // Assign ID for potential removal
+
+    // Apply relevant styles from the textarea
+    const styles = window.getComputedStyle(textarea);
+    [
+        'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing',
+        'paddingTop', 'paddingLeft', 'paddingRight', 'paddingBottom',
+        'borderTopWidth', 'borderLeftWidth', 'borderRightWidth', 'borderBottomWidth',
+        'width', // Use textarea's clientWidth for accurate wrapping calculation
+        'boxSizing', 'whiteSpace', 'wordWrap', 'wordBreak', 'tabSize'
+    ].forEach(prop => {
+        (measureDiv.style as any)[prop] = (styles as any)[prop];
+    });
+    measureDiv.style.position = 'absolute';
+    measureDiv.style.top = '-9999px'; // Position off-screen
+    measureDiv.style.left = '-9999px';
+    measureDiv.style.height = 'auto'; // Allow height to adjust
+    measureDiv.style.visibility = 'hidden'; // Keep it hidden
+    // measureDiv.style.width = `${textarea.clientWidth}px`; // Crucial for wrapping
+
+    // Use text before the index and a marker span
+    const textBefore = editorContent.substring(0, index);
+    const markerSpan = document.createElement('span');
+    markerSpan.textContent = '|'; // Invisible marker or zero-width space could also work
+
+    // Set content carefully to handle newlines correctly (replace with <br> or use pre-wrap)
+    measureDiv.textContent = textBefore;
+    measureDiv.appendChild(markerSpan);
+
+    document.body.appendChild(measureDiv);
+
+    // Calculate position relative to textarea, considering scroll
+    const markerRect = markerSpan.getBoundingClientRect();
+    const textareaRect = textarea.getBoundingClientRect(); // Get current textarea position
+
+    // Calculate coordinates relative to the textarea's content box, including scroll offset
+    const x = markerRect.left - textareaRect.left - parseFloat(styles.borderLeftWidth) - parseFloat(styles.paddingLeft) + textarea.scrollLeft;
+    const y = markerRect.top - textareaRect.top - parseFloat(styles.borderTopWidth) - parseFloat(styles.paddingTop) + textarea.scrollTop;
+    const height = markerRect.height || parseFloat(styles.lineHeight || '0'); // Use marker height or line height
+
+    // Cleanup: Remove the measurement div
+    document.body.removeChild(measureDiv);
+
+    return { x, y, height };
+};
+
+
   const renderCursors = () => {
-    if (!textareaRef.current) return null
+    if (!textareaRef.current) return null;
 
     return activeUsers
-      .filter((user) => user.id !== currentUser?.id && user.cursor)
+      .filter(user => user.cursor && user.cursor.anchor !== null) // Ensure cursor data exists
       .map((user) => {
-        const { cursor, color, email } = user
-        if (!cursor) return null
+        try {
+          const coords = getCoordsFromIndex(user.cursor!.anchor!); // Use anchor for caret position
+          if (!coords) return null; // Skip if coords couldn't be calculated
 
-        // Calculate position based on textarea
-        const textBeforeCursor = content.substring(0, cursor.position)
-        const lines = textBeforeCursor.split("\n")
-        const lineNumber = lines.length - 1
-        const charPosition = lines[lineNumber].length
+          return (
+            <TooltipProvider key={`${user.id}-cursor`}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* Caret Element */}
+                  <div
+                    aria-hidden="true"
+                    className="absolute w-0.5 animate-pulse" // Use pulse animation
+                    style={{
+                      top: `${coords.y}px`,
+                      left: `${coords.x}px`,
+                      height: `${coords.height}px`, // Use calculated line height
+                      backgroundColor: user.color,
+                      opacity: 0.9,
+                      zIndex: 10 // Ensure it's above text but below UI elements if needed
+                    }}
+                  />
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{user.full_name || user.email || "User"}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          );
+        } catch (e) {
+          console.error("Error rendering cursor for user", user.id, e);
+          return null;
+        }
+      });
+  };
 
-        // Get line height and char width (approximate)
-        const lineHeight = 24 // Adjust based on your font size
-        const charWidth = 8 // Adjust based on your font
 
-        const top = lineNumber * lineHeight
-        const left = charPosition * charWidth
-
-        return (
-          <TooltipProvider key={user.id}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div
-                  className={`absolute w-0.5 h-5 ${color} animate-pulse`}
-                  style={{ top: `${top}px`, left: `${left}px` }}
-                />
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>{email || "Anonymous user"}</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )
-      })
-  }
-
+  // --- Render JSX ---
   return (
-    <div className="flex h-screen flex-col">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
-        <div className="container flex h-16 items-center justify-between px-4 md:px-6">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => router.push("/dashboard")} className="rounded-full">
+    <div className="flex h-screen flex-col bg-background">
+      {/* Header */}
+      <header className="sticky top-0 z-20 border-b bg-background/90 backdrop-blur-sm">
+        <div className="container flex h-16 items-center justify-between gap-2 px-4 md:px-6">
+          {/* Left Side: Back Button, Title, Saving Indicator */}
+          <div className="flex items-center gap-2 sm:gap-4 flex-1 min-w-0">
+            <Button variant="ghost" size="icon" onClick={() => router.push("/dashboard")} className="rounded-full flex-shrink-0">
               <ArrowLeft className="h-5 w-5" />
-              <span className="sr-only">Back to Dashboard</span>
             </Button>
-            <div className="flex items-center gap-2">
-              <input
+            <div className="flex items-center gap-2 min-w-0 flex-grow">
+              <Input
                 type="text"
                 value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="border-none bg-transparent text-lg font-semibold focus:outline-none focus:ring-0"
+                onChange={handleTitleChange}
+                className="border-none bg-transparent text-lg font-semibold focus:outline-none focus:ring-0 p-0 h-auto truncate flex-grow"
                 placeholder="Untitled Document"
+                aria-label="Document Title"
               />
-              {saving && (
-                <div className="flex items-center text-sm text-muted-foreground">
+              {isSavingTitle && (
+                <div className="flex items-center text-sm text-muted-foreground flex-shrink-0" aria-live="polite">
                   <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                  Saving...
+                  <span className="hidden sm:inline">Saving title...</span>
+                </div>
+              )}
+              {provider && !provider.synced && (
+                <div className="flex items-center text-sm text-yellow-600 flex-shrink-0" aria-live="polite">
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  <span className="hidden sm:inline">Syncing...</span>
                 </div>
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+
+          {/* Right Side: View Tabs, Avatars, Comments, Share */}
+          <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
             <Tabs value={view} onValueChange={(v) => setView(v as any)} className="hidden md:block">
               <TabsList>
                 <TabsTrigger value="editor">Editor</TabsTrigger>
@@ -503,28 +594,39 @@ export default function MarkdownEditor({ document }: { document: Document }) {
               </TabsList>
             </Tabs>
 
-            <div className="flex -space-x-2 mr-2">
+            {/* Combined Active Users Avatars */}
+            <div className="flex -space-x-2 items-center" aria-label="Active collaborators">
+              {currentUser && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Avatar className="h-8 w-8 border-2 border-background ring-2 ring-primary">
+                        <AvatarImage src={currentUser.avatar_url || ""} alt={currentUser.email} />
+                        <AvatarFallback>{currentUser.email?.charAt(0).toUpperCase() || 'Me'}</AvatarFallback>
+                      </Avatar>
+                    </TooltipTrigger>
+                    <TooltipContent><p>You ({currentUser.email})</p></TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
               {activeUsers.slice(0, 3).map((user) => (
                 <TooltipProvider key={user.id}>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Avatar
-                        className={`h-8 w-8 border-2 border-background ${user.id === currentUser?.id ? "ring-2 ring-primary" : ""}`}
-                      >
+                      <Avatar className="h-8 w-8 border-2 border-background" style={{ backgroundColor: user.color }}>
                         <AvatarImage src={user.avatar_url || ""} alt={user.email} />
-                        <AvatarFallback className={user.color + " text-white"}>
-                          {user.email?.charAt(0).toUpperCase() || "U"}
+                        <AvatarFallback className="text-white text-xs font-semibold">
+                          {/* Initials logic */}
+                          {user.full_name?.split(' ').map(n => n[0]).slice(0, 2).join('') || user.email?.charAt(0).toUpperCase() || '?'}
                         </AvatarFallback>
                       </Avatar>
                     </TooltipTrigger>
-                    <TooltipContent>
-                      <p>{user.email || "Anonymous user"}</p>
-                    </TooltipContent>
+                    <TooltipContent><p>{user.full_name || user.email}</p></TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
               ))}
               {activeUsers.length > 3 && (
-                <Avatar className="h-8 w-8 border-2 border-background">
+                <Avatar className="h-8 w-8 border-2 border-background bg-muted">
                   <AvatarFallback>+{activeUsers.length - 3}</AvatarFallback>
                 </Avatar>
               )}
@@ -534,170 +636,181 @@ export default function MarkdownEditor({ document }: { document: Document }) {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    variant="outline"
+                    variant={isCommentsOpen ? "secondary" : "ghost"}
                     size="icon"
                     className="rounded-full relative"
                     onClick={() => setIsCommentsOpen(!isCommentsOpen)}
+                    aria-label={isCommentsOpen ? "Close Comments" : "Open Comments"}
+                    aria-expanded={isCommentsOpen}
                   >
                     <MessageSquare className="h-4 w-4" />
                     {comments.length > 0 && (
-                      <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground">
+                      <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground" aria-label={`${comments.length} comments`}>
                         {comments.length}
                       </span>
                     )}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>
-                  <p>Comments</p>
-                </TooltipContent>
+                <TooltipContent><p>Comments</p></TooltipContent>
               </Tooltip>
             </TooltipProvider>
 
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="rounded-full"
-                    onClick={() => setIsShareDialogOpen(true)}
-                  >
+                  <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setIsShareDialogOpen(true)} aria-label="Share Document">
                     <Share className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>
-                  <p>Share</p>
-                </TooltipContent>
+                <TooltipContent><p>Share</p></TooltipContent>
               </Tooltip>
             </TooltipProvider>
           </div>
         </div>
       </header>
 
-      <div className="grid flex-1 overflow-hidden">
-        {view === "split" && (
-          <div className="grid md:grid-cols-2 h-full">
-            <div className="relative border-r overflow-hidden">
-              <Textarea
-                ref={textareaRef}
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                onSelect={() => {
-                  updateCursorPosition()
-                  handleTextSelection()
-                }}
-                onClick={() => updateCursorPosition()}
-                onKeyUp={() => updateCursorPosition()}
-                className="min-h-[calc(100vh-4rem)] w-full resize-none border-0 p-4 font-mono text-sm focus-visible:ring-0"
-                placeholder="Start writing your markdown here..."
-              />
-              {renderCursors()}
+      {/* Main Content Area */}
+      <div className={`grid flex-1 overflow-hidden ${isCommentsOpen ? 'grid-cols-[1fr_auto]' : 'grid-cols-1'}`}>
+        {/* Editor/Preview Pane */}
+        <div className="grid h-full overflow-hidden">
+          {view === "split" && (
+            <div className="grid md:grid-cols-2 h-full overflow-hidden">
+              <div className="relative h-full border-r overflow-hidden"> {/* Keep hidden for cursor parent */}
+                <Textarea
+                  ref={textareaRef}
+                  value={editorContent}
+                  onChange={(e) => handleEditorChange(e.target.value)}
+                  onSelect={() => { updateAwarenessCursor(); handleTextSelection(); }}
+                  onClick={updateAwarenessCursor}
+                  onFocus={updateAwarenessCursor}
+                  onKeyUp={updateAwarenessCursor}
+                  className="absolute inset-0 w-full h-full resize-none border-0 p-4 font-mono text-sm focus-visible:ring-0 whitespace-pre-wrap overflow-auto" // Allow scrolling within textarea
+                  placeholder="Start writing your markdown here..."
+                  aria-label="Markdown Editor"
+                />
+                {/* Cursor Rendering Layer */}
+                <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+                  {renderCursors()}
+                </div>
+              </div>
+              <ScrollArea className="p-4 h-full" aria-label="Markdown Preview">
+                <div
+                  className="prose max-w-none dark:prose-invert"
+                  dangerouslySetInnerHTML={{ __html: marked(editorContent || '') }} // Ensure content is not null/undefined
+                />
+              </ScrollArea>
             </div>
-            <ScrollArea className="p-4 h-[calc(100vh-4rem)]">
+          )}
+
+          {view === "editor" && (
+             <div className="relative h-full overflow-hidden"> {/* Keep hidden for cursor parent */}
+                <Textarea
+                  ref={textareaRef}
+                  value={editorContent}
+                  onChange={(e) => handleEditorChange(e.target.value)}
+                  onSelect={() => { updateAwarenessCursor(); handleTextSelection(); }}
+                  onClick={updateAwarenessCursor}
+                  onFocus={updateAwarenessCursor}
+                  onKeyUp={updateAwarenessCursor}
+                  className="absolute inset-0 w-full h-full resize-none border-0 p-4 font-mono text-sm focus-visible:ring-0 whitespace-pre-wrap overflow-auto"
+                  placeholder="Start writing your markdown here..."
+                  aria-label="Markdown Editor"
+                />
+                {/* Cursor Rendering Layer */}
+                 <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden="true">
+                   {renderCursors()}
+                 </div>
+             </div>
+          )}
+
+          {view === "preview" && (
+            <ScrollArea className="p-4 h-full" aria-label="Markdown Preview">
               <div
-                className="prose max-w-none dark:prose-invert"
-                dangerouslySetInnerHTML={{ __html: marked(content) }}
+                 className="prose max-w-none dark:prose-invert"
+                 dangerouslySetInnerHTML={{ __html: marked(editorContent || '') }}
               />
             </ScrollArea>
-          </div>
-        )}
+          )}
+        </div>
 
-        {view === "editor" && (
-          <div className="relative h-full overflow-hidden">
-            <Textarea
-              ref={textareaRef}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              onSelect={() => {
-                updateCursorPosition()
-                handleTextSelection()
-              }}
-              onClick={() => updateCursorPosition()}
-              onKeyUp={() => updateCursorPosition()}
-              className="min-h-[calc(100vh-4rem)] w-full resize-none border-0 p-4 font-mono text-sm focus-visible:ring-0"
-              placeholder="Start writing your markdown here..."
-            />
-            {renderCursors()}
-          </div>
-        )}
-
-        {view === "preview" && (
-          <ScrollArea className="p-4 h-[calc(100vh-4rem)]">
-            <div className="prose max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: marked(content) }} />
-          </ScrollArea>
-        )}
-
+        {/* Comments Sidebar */}
         {isCommentsOpen && (
-          <div className="fixed right-0 top-16 bottom-0 w-80 border-l bg-background z-10 flex flex-col">
-            <div className="p-4 border-b flex items-center justify-between">
-              <h3 className="font-semibold">Comments</h3>
-              <Button variant="ghost" size="sm" onClick={() => setIsCommentsOpen(false)}>
-                ×
+          <aside className="w-80 border-l bg-background z-10 flex flex-col h-full" aria-label="Comments Section">
+            <div className="p-4 border-b flex items-center justify-between flex-shrink-0">
+              <h3 className="font-semibold text-lg">Comments</h3>
+              <Button variant="ghost" size="icon" className="rounded-full" onClick={() => { setIsCommentsOpen(false); setSelectedPosition(null); }} aria-label="Close Comments">
+                <CloseIcon className="h-5 w-5" />
               </Button>
             </div>
 
             {selectedPosition !== null && (
-              <div className="p-4 border-b">
+              <div className="p-4 border-b flex-shrink-0 bg-muted/50">
                 <h4 className="text-sm font-medium mb-2">Add Comment</h4>
                 <Textarea
                   value={newComment}
                   onChange={(e) => setNewComment(e.target.value)}
                   placeholder="Write a comment..."
-                  className="min-h-[100px] text-sm"
+                  className="min-h-[80px] text-sm"
+                  rows={3}
+                  aria-label="New comment input"
                 />
                 <div className="flex justify-end mt-2 gap-2">
                   <Button variant="outline" size="sm" onClick={() => setSelectedPosition(null)}>
                     Cancel
                   </Button>
-                  <Button size="sm" onClick={addComment} disabled={!newComment || isLoading}>
-                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add Comment"}
+                  <Button size="sm" onClick={addComment} disabled={!newComment.trim() || isLoading}>
+                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add"}
                   </Button>
                 </div>
               </div>
             )}
 
-            <ScrollArea className="flex-1 p-4">
-              {comments.length === 0 ? (
-                <div className="text-center text-muted-foreground py-8">
-                  <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p>No comments yet</p>
-                  <p className="text-xs mt-1">Select text to add a comment</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {comments.map((comment) => (
-                    <Comment key={comment.id} comment={comment} />
-                  ))}
-                </div>
-              )}
+            <ScrollArea className="flex-1">
+              <div className="p-4">
+                {comments.length === 0 && selectedPosition === null ? (
+                  <div className="text-center text-muted-foreground py-8">
+                    <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">No comments yet</p>
+                    <p className="text-xs mt-1">Select text in the editor to add one.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {comments.map((comment) => (
+                      <Comment key={comment.id} comment={comment} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </ScrollArea>
-          </div>
+          </aside>
         )}
       </div>
 
+      {/* Share Dialog */}
       <Dialog open={isShareDialogOpen} onOpenChange={setIsShareDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Share Document</DialogTitle>
-            <DialogDescription>Enter the email of the user you want to share this document with.</DialogDescription>
+            <DialogDescription>Enter the email of the user you want to collaborate with.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="share-email">Email address</Label>
               <Input
-                id="email"
+                id="share-email"
                 type="email"
-                placeholder="user@example.com"
+                placeholder="collaborator@example.com"
                 value={shareEmail}
                 onChange={(e) => setShareEmail(e.target.value)}
               />
+              {/* Consider adding a list of current collaborators here */}
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsShareDialogOpen(false)} disabled={isLoading}>
               Cancel
             </Button>
-            <Button onClick={handleShare} disabled={isLoading || !shareEmail}>
+            <Button onClick={handleShare} disabled={isLoading || !shareEmail.trim()}>
               {isLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Share className="h-4 w-4 mr-2" />}
               Share
             </Button>
@@ -705,6 +818,5 @@ export default function MarkdownEditor({ document }: { document: Document }) {
         </DialogContent>
       </Dialog>
     </div>
-  )
+  );
 }
-
