@@ -29,7 +29,8 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Comment } from "@/components/comment"
 import * as Y from 'yjs'
 // FIX: Correct import for SupabaseProvider (default export)
-import SupabaseProvider from 'y-supabase'
+import SupabaseProvider from 'y-supabase';
+
 import type { Database } from "@/lib/supabase-types" // Import Database type if you have it
 
 // --- Interfaces ---
