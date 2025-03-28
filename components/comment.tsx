@@ -7,9 +7,9 @@ interface CommentProps {
     content: string
     created_at: string
     user?: {
-      email?: string
-      full_name?: string
-      avatar_url?: string
+      email?: string 
+      full_name?: string | null | undefined
+      avatar_url?: string | null | undefined
     } | null
   }
 }
