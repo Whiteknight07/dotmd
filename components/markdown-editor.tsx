@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { createClientComponentClient } from "@supabase/auth-helpers-nextjs"
 import { ArrowLeft, Save, Share, MessageSquare, Loader2 } from "lucide-react"
 import { marked } from "marked"
-import { useDebounce } from "use-debounce"
+import { useDebounce, useDebouncedCallback } from "use-debounce" // Import useDebouncedCallback
 import type { RealtimeChannel } from "@supabase/supabase-js"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { toast } from "@/hooks/use-toast"
@@ -80,8 +80,8 @@ const getRandomColor = () => {
 export default function MarkdownEditor({ document }: { document: Document }) {
   const [content, setContent] = useState(document.content)
   const [title, setTitle] = useState(document.title)
-  const [debouncedContent] = useDebounce(content, 1000)
-  const [debouncedTitle] = useDebounce(title, 1000)
+  const [debouncedContent] = useDebounce(content, 500) // Reduced debounce time
+  const [debouncedTitle] = useDebounce(title, 500)   // Reduced debounce time
   const [saving, setSaving] = useState(false)
   const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([])
   const [currentUser, setCurrentUser] = useState<User | null>(null)
@@ -267,9 +267,9 @@ export default function MarkdownEditor({ document }: { document: Document }) {
     }
   }, [document.id, supabase])
 
-  // Update cursor position
-  const updateCursorPosition = () => {
-    if (!textareaRef.current) return
+  // Debounced function to update cursor position
+  const debouncedUpdateCursorPosition = useDebouncedCallback(() => {
+    if (!textareaRef.current || !currentUser) return // Also check for currentUser
 
     const channel = supabase.channel(`document:${document.id}`)
     const position = textareaRef.current.selectionStart
@@ -289,7 +289,7 @@ export default function MarkdownEditor({ document }: { document: Document }) {
         cursor: { position, selection },
       },
     })
-  }
+  }, 150) // Just the callback and the delay
 
   // Save document when content changes
   useEffect(() => {
@@ -568,11 +568,11 @@ export default function MarkdownEditor({ document }: { document: Document }) {
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 onSelect={() => {
-                  updateCursorPosition()
+                  debouncedUpdateCursorPosition() // Use debounced function
                   handleTextSelection()
                 }}
-                onClick={() => updateCursorPosition()}
-                onKeyUp={() => updateCursorPosition()}
+                onClick={debouncedUpdateCursorPosition} // Use debounced function
+                onKeyUp={debouncedUpdateCursorPosition} // Use debounced function
                 className="min-h-[calc(100vh-4rem)] w-full resize-none border-0 p-4 font-mono text-sm focus-visible:ring-0"
                 placeholder="Start writing your markdown here..."
               />
@@ -594,11 +594,11 @@ export default function MarkdownEditor({ document }: { document: Document }) {
               value={content}
               onChange={(e) => setContent(e.target.value)}
               onSelect={() => {
-                updateCursorPosition()
+                debouncedUpdateCursorPosition() // Use debounced function
                 handleTextSelection()
               }}
-              onClick={() => updateCursorPosition()}
-              onKeyUp={() => updateCursorPosition()}
+              onClick={debouncedUpdateCursorPosition} // Use debounced function
+              onKeyUp={debouncedUpdateCursorPosition} // Use debounced function
               className="min-h-[calc(100vh-4rem)] w-full resize-none border-0 p-4 font-mono text-sm focus-visible:ring-0"
               placeholder="Start writing your markdown here..."
             />
