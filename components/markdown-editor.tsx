@@ -118,45 +118,37 @@ export default function MarkdownEditor({ document }: { document: Document }) {
   // Fetch comments
   useEffect(() => {
     const fetchComments = async () => {
-      // Replace this:
-      // const { data, error } = await supabase
-      //   .from("comments")
-      //   .select(`
-      //     *,
-      //     user:profiles(email, full_name, avatar_url)
-      //   `)
-      //   .eq("document_id", document.id)
-      //   .order("created_at", { ascending: false })
-
-      // With this:
-      const { data: commentsData, error } = await supabase
+      const { data, error } = await supabase
         .from("comments")
-        .select("*")
+        .select(`
+          *,
+          user:profiles(email, full_name, avatar_url)
+        `)
         .eq("document_id", document.id)
         .order("created_at", { ascending: false })
 
       if (error) {
         console.error("Error fetching comments:", error)
+        toast({
+          title: "Error",
+          description: "Failed to load comments.",
+          variant: "destructive",
+        })
         return
       }
 
-      // Then fetch user data separately for each comment
-      const commentsWithUsers = await Promise.all(
-        commentsData.map(async (comment) => {
-          const { data: userData } = await supabase
-            .from("profiles")
-            .select("email, full_name, avatar_url")
-            .eq("id", comment.user_id)
-            .single()
+      // Ensure the structure matches CommentType, especially the nested user object
+      const formattedComments = data.map(comment => ({
+        ...comment,
+        user: comment.user ? {
+          email: (comment.user as any).email,
+          full_name: (comment.user as any).full_name,
+          avatar_url: (comment.user as any).avatar_url,
+        } : null // Handle case where user might be null
+      })) as CommentType[]
 
-          return {
-            ...comment,
-            user: userData,
-          }
-        }),
-      )
 
-      setComments(commentsWithUsers || [])
+      setComments(formattedComments || [])
     }
 
     fetchComments()
@@ -306,6 +298,7 @@ export default function MarkdownEditor({ document }: { document: Document }) {
             content: debouncedContent,
             title: debouncedTitle,
             updated_at: new Date().toISOString(),
+            user_id: currentUser?.id, // Add user_id to track who made the change
           })
           .eq("id", document.id)
 
@@ -322,39 +315,11 @@ export default function MarkdownEditor({ document }: { document: Document }) {
       }
     }
 
-    saveDocument()
-  }, [debouncedContent, debouncedTitle, document.content, document.id, document.title, supabase])
-
-  // Manual save
-  const handleSave = async () => {
-    setSaving(true)
-    try {
-      const { error } = await supabase
-        .from("documents")
-        .update({
-          content,
-          title,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", document.id)
-
-      if (error) throw error
-
-      toast({
-        title: "Saved",
-        description: "Your document has been saved",
-      })
-    } catch (error) {
-      console.error("Error saving document:", error)
-      toast({
-        title: "Error saving",
-        description: "Failed to save your changes",
-        variant: "destructive",
-      })
-    } finally {
-      setSaving(false)
+    // Only run saveDocument if currentUser is loaded
+    if (currentUser) {
+      saveDocument()
     }
-  }
+  }, [debouncedContent, debouncedTitle, document.content, document.id, document.title, supabase, currentUser]) // Add currentUser here
 
   // Handle sharing
   const handleShare = async () => {
@@ -584,11 +549,6 @@ export default function MarkdownEditor({ document }: { document: Document }) {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-
-            <Button onClick={handleSave} disabled={saving} className="rounded-full">
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
-              Save
-            </Button>
           </div>
         </div>
       </header>
