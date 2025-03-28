@@ -97,6 +97,10 @@ export default function MarkdownEditor({ document }: { document: Document }) {
   const router = useRouter()
   const supabase = createClientComponentClient()
 
+  // Store the last saved content/title to prevent redundant saves
+  const lastSavedContent = useRef(document.content);
+  const lastSavedTitle = useRef(document.title);
+
   // Fetch current user
   useEffect(() => {
     const fetchCurrentUser = async () => {
@@ -291,12 +295,20 @@ export default function MarkdownEditor({ document }: { document: Document }) {
     })
   }
 
-  // Save document when content changes
+  // Save document when debounced content/title changes
   useEffect(() => {
     const saveDocument = async () => {
-      if (debouncedContent === document.content && debouncedTitle === document.title) return
+      // Prevent saving if content and title haven't changed from the last saved state
+      if (debouncedContent === lastSavedContent.current && debouncedTitle === lastSavedTitle.current) {
+        return;
+      }
 
-      setSaving(true)
+      // Prevent saving if currentUser is not yet loaded
+      if (!currentUser) {
+          return;
+      }
+
+      setSaving(true);
       try {
         const { error } = await supabase
           .from("documents")
@@ -304,28 +316,31 @@ export default function MarkdownEditor({ document }: { document: Document }) {
             content: debouncedContent,
             title: debouncedTitle,
             updated_at: new Date().toISOString(),
-            user_id: currentUser?.id, // Add user_id to track who made the change
+            user_id: currentUser.id, // Ensure user_id is correctly set
           })
-          .eq("id", document.id)
+          .eq("id", document.id);
 
-        if (error) throw error
+        if (error) throw error;
+
+        // Update the refs with the successfully saved content/title
+        lastSavedContent.current = debouncedContent;
+        lastSavedTitle.current = debouncedTitle;
+
       } catch (error) {
-        console.error("Error saving document:", error)
+        console.error("Error saving document:", error);
         toast({
           title: "Error saving",
           description: "Failed to save your changes",
           variant: "destructive",
-        })
+        });
       } finally {
-        setSaving(false)
+        setSaving(false);
       }
-    }
+    };
 
-    // Only run saveDocument if currentUser is loaded
-    if (currentUser) {
-      saveDocument()
-    }
-  }, [debouncedContent, debouncedTitle, document.content, document.id, document.title, supabase, currentUser]) // Add currentUser here
+    saveDocument();
+    // Depend only on debounced values, document.id, supabase, and currentUser
+  }, [debouncedContent, debouncedTitle, document.id, supabase, currentUser]);
 
   // Handle sharing
   const handleShare = async () => {
