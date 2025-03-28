@@ -212,12 +212,18 @@ export default function MarkdownEditor({ document }: { document: Document }) {
         })
         .on("presence", { event: "sync" }, () => {
           const state = channel.presenceState()
-          const users = Object.values(state).map((presence: any) => ({
-            ...presence[0].user,
-            color: presence[0].color,
-            cursor: presence[0].cursor,
-          }))
-          setActiveUsers(users as ActiveUser[])
+          const userMap = new Map<string, ActiveUser>()
+          Object.values(state).forEach((presence: any) => {
+            const userPresence = presence[0] // Assuming the first presence is the relevant one
+            if (userPresence && userPresence.user && userPresence.user.id) {
+              userMap.set(userPresence.user.id, {
+                ...userPresence.user,
+                color: userPresence.color,
+                cursor: userPresence.cursor,
+              })
+            }
+          })
+          setActiveUsers(Array.from(userMap.values())) // Set state with unique users from the map
         })
         .on("presence", { event: "join" }, ({ key, newPresences }) => {
           const newUser = {
