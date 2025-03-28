@@ -3,9 +3,10 @@ import { createServerComponentClient } from "@supabase/auth-helpers-nextjs"
 import { cookies } from "next/headers"
 import DashboardShell from "@/components/dashboard-shell"
 import DocumentList from "@/components/document-list"
+import type { Database } from "@/lib/supabase-types"
 
 export default async function DashboardPage() {
-  const supabase = createServerComponentClient<any>({ cookies })
+  const supabase = createServerComponentClient<Database>({ cookies })
 
   // Check if user is authenticated
   const { data: { user }, error } = await supabase.auth.getUser()
